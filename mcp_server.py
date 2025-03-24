@@ -339,7 +339,7 @@ async def process_suggestion_request(
         """
 
         response = claude.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-3-7-sonnet-20250219",
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
