@@ -1,10 +1,11 @@
-from security.user_auth import UserAuth
 import os
 import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from security.user_auth import UserAuth
 
 # Adiciona o diretório raiz ao path para importação
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
