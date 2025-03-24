@@ -138,7 +138,7 @@ async def update_repository(repo_instance):
         return False
 
 
-def run_github_action(workflow_name: str):
+def run_github_action(workflow_name: str, repo_url: str):
     """Executa uma GitHub Action específica."""
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -146,7 +146,7 @@ def run_github_action(workflow_name: str):
     }
 
     # Extrai o proprietário e o nome do repositório da URL
-    repo_parts = REPO_URL.split("/")
+    repo_parts = repo_url.split("/")
     owner = repo_parts[-2]
     repo_name = repo_parts[-1].replace(".git", "")
 
@@ -328,13 +328,12 @@ async def process_suggestion_request(
         # Consulta o Claude para sugestões
         prompt = f"""
         Aqui está o conteúdo do arquivo '{file_path}':
-        
+
         ```
         {content}
         ```
-        
         Modificação desejada: {description}
-        
+
         Por favor, sugira o código modificado para atender a essa solicitação.
         Forneça apenas o código completo modificado, sem explicações adicionais.
         """
@@ -400,9 +399,10 @@ async def apply_modification(request: ApplyModificationRequest):
         suggestion = suggestions_store[request.suggestion_id]
         file_path = suggestion["file_path"]
         suggested_code = suggestion["suggested"]
+        repo_path = suggestion["repo_path"]
 
         # Aplica a sugestão
-        full_path = os.path.join(REPO_PATH, file_path)
+        full_path = os.path.join(repo_path, file_path)
         with open(full_path, "w", encoding="utf-8") as file:
             file.write(suggested_code)
 
@@ -459,11 +459,16 @@ async def reject_modification(request: ApplyModificationRequest):
 async def commit_changes(request: CommitRequest):
     """Realiza commit das alterações."""
     try:
+        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        if error:
+            send_telegram_message(request.chat_id, error)
+            raise HTTPException(status_code=400, detail=error)
+
         # Adiciona todas as alterações
-        repo.git.add("--all")
+        repo_instance.git.add("--all")
 
         # Realiza o commit
-        repo.git.commit("-m", request.message)
+        repo_instance.git.commit("-m", request.message)
 
         # Informa ao usuário
         send_telegram_message(
@@ -487,8 +492,13 @@ async def commit_changes(request: CommitRequest):
 async def push_changes(request: PushRequest):
     """Envia as alterações para o GitHub."""
     try:
+        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        if error:
+            send_telegram_message(request.chat_id, error)
+            raise HTTPException(status_code=400, detail=error)
+
         # Envia as alterações para o GitHub
-        origin = repo.remotes.origin
+        origin = repo_instance.remotes.origin
         origin.push()
 
         # Informa ao usuário
@@ -511,7 +521,15 @@ async def push_changes(request: PushRequest):
 async def execute_github_action(workflow_name: str, request: PushRequest):
     """Executa uma GitHub Action específica."""
     try:
-        result = run_github_action(workflow_name)
+        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        if error:
+            send_telegram_message(request.chat_id, error)
+            raise HTTPException(status_code=400, detail=error)
+
+        # Obtém a URL remota do repositório
+        repo_url = repo_instance.remotes.origin.url
+
+        result = run_github_action(workflow_name, repo_url)
 
         if result:
             # Informa ao usuário

@@ -58,7 +58,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     Comandos disponíveis:
     /start - Inicia o bot
     /help - Mostra esta mensagem de ajuda
-    
+
     Navegação:
     /repos - Lista todos os repositórios disponíveis
     /select <nome_repo> - Seleciona um repositório para trabalhar
@@ -67,7 +67,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     /pwd - Mostra o diretório atual
     /tree [profundidade] - Mostra a estrutura de diretórios (padrão: profundidade 2)
     /cat <arquivo> - Mostra o conteúdo de um arquivo
-    
+
     Manipulação de código:
     /status - Verifica o status do repositório atual
     /suggest <arquivo> <descrição> - Solicita ao Claude sugestões para modificar um arquivo
@@ -592,13 +592,13 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Consulta o Claude para sugestões
         prompt = f"""
         Aqui está o conteúdo do arquivo '{file_path}':
-        
+
         ```
         {content}
         ```
-        
+
         Modificação desejada: {description}
-        
+
         Por favor, sugira o código modificado para atender a essa solicitação.
         Forneça apenas o código completo modificado, sem explicações adicionais.
         """

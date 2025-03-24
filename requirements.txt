@@ -16,3 +16,4 @@ black
 isort
 flake8
 pylint
+autopep8

@@ -189,7 +189,7 @@ else
     cat > .flake8 << 'EOL'
 [flake8]
 max-line-length = 100
-exclude = .git,__pycache__,build,dist
+exclude = .git,__pycache__,build,dist,venv,.venv
 ignore = E203, W503
 per-file-ignores =
     __init__.py:F401

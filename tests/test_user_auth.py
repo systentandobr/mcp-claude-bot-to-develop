@@ -1,3 +1,4 @@
+from security.user_auth import UserAuth
 import os
 import sys
 import tempfile
@@ -9,7 +10,6 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Importa o módulo para teste
-from security.user_auth import UserAuth
 
 
 class TestUserAuth:
