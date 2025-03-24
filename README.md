@@ -49,7 +49,20 @@ Uma solução segura para desenvolvimento remoto usando o Telegram como interfac
    nano .env  # Edit the file with your API keys and paths
    ```
 
-4. Torne o script de inicialização executável:
+4. Configure o ambiente virtual python antes de baixar as dependências `pip`
+```bash
+python3 -m venv venv               
+source venv/bin/activate
+
+pip install -r requirements.txt
+pip uninstall -y langchain         
+pip install langchain==0.0.267
+
+pip uninstall -y pyautoguipip install -r requirements.txt
+
+```
+
+5. Torne o script de inicialização executável:
    ```bash
    chmod +x start.sh
    ```
