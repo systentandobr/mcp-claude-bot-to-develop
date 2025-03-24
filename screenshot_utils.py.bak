@@ -1,14 +1,23 @@
 import os
-import logging
+import pyautogui
 import tempfile
 from PIL import Image, ImageDraw, ImageFont
+import subprocess
+import logging
 
 logger = logging.getLogger(__name__)
 
 def capture_directory_structure(path, output_path=None, terminal_width=80):
     """
     Captura a estrutura de diretórios em uma imagem.
-    Versão alternativa que não usa pyautogui.
+    
+    Args:
+        path: Caminho do diretório para visualizar
+        output_path: Caminho de saída para salvar a captura
+        terminal_width: Largura do terminal virtual
+        
+    Returns:
+        Caminho da imagem gerada
     """
     try:
         if output_path is None:
@@ -16,8 +25,19 @@ def capture_directory_structure(path, output_path=None, terminal_width=80):
             fd, output_path = tempfile.mkstemp(suffix='.png')
             os.close(fd)
         
-        # Gera texto da estrutura do diretório
-        tree_output = generate_tree_text(path)
+        # Obtém a listagem de diretórios usando o comando tree
+        try:
+            # Tenta usar o comando tree se disponível
+            result = subprocess.run(
+                ['tree', '-C', '-L', '3', path], 
+                capture_output=True, 
+                text=True, 
+                check=True
+            )
+            tree_output = result.stdout
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback: usa nossa própria implementação de tree
+            tree_output = generate_tree_text(path)
         
         # Cria uma imagem para mostrar a estrutura do diretório
         lines = tree_output.split('\n')
@@ -30,11 +50,21 @@ def capture_directory_structure(path, output_path=None, terminal_width=80):
         img = Image.new('RGB', (width, height), color=(30, 30, 30))
         draw = ImageDraw.Draw(img)
         
+        # Tenta carregar uma fonte monospace
+        try:
+            font = ImageFont.truetype("DejaVuSansMono.ttf", font_size)
+        except IOError:
+            try:
+                font = ImageFont.truetype("Courier.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+        
         # Desenha o texto
         y = 10
         for line in lines:
-            # Cor padrão
-            color = (200, 200, 200)
+            # Substitui os códigos de cores ANSI por cores na imagem
+            # Esse é um processamento simplificado, pode ser melhorado
+            color = (200, 200, 200)  # Cor padrão
             
             # Cores simples para diretórios e arquivos
             if "└── " in line or "├── " in line:
@@ -43,7 +73,7 @@ def capture_directory_structure(path, output_path=None, terminal_width=80):
                 else:  # Arquivo
                     color = (212, 212, 212)
             
-            draw.text((10, y), line, fill=color)
+            draw.text((10, y), line, font=font, fill=color)
             y += line_height
         
         # Salva a imagem
@@ -57,6 +87,7 @@ def capture_directory_structure(path, output_path=None, terminal_width=80):
 def generate_tree_text(path, prefix="", is_last=True, max_depth=3, current_depth=0):
     """
     Gera uma representação textual da estrutura de diretório.
+    Função auxiliar caso o comando 'tree' não esteja disponível.
     """
     if current_depth > max_depth:
         return ""
@@ -106,7 +137,13 @@ def generate_tree_text(path, prefix="", is_last=True, max_depth=3, current_depth
 def capture_file_content(file_path, output_path=None):
     """
     Captura o conteúdo de um arquivo em uma imagem.
-    Versão alternativa que não usa pyautogui.
+    
+    Args:
+        file_path: Caminho do arquivo para visualizar
+        output_path: Caminho de saída para salvar a captura
+        
+    Returns:
+        Caminho da imagem gerada
     """
     try:
         if output_path is None:
@@ -137,12 +174,21 @@ def capture_file_content(file_path, output_path=None):
         img = Image.new('RGB', (width, height), color=(30, 30, 30))
         draw = ImageDraw.Draw(img)
         
+        # Tenta carregar uma fonte monospace
+        try:
+            font = ImageFont.truetype("DejaVuSansMono.ttf", font_size)
+        except IOError:
+            try:
+                font = ImageFont.truetype("Courier.ttf", font_size)
+            except IOError:
+                font = ImageFont.load_default()
+        
         # Desenha o texto
         y = 10
         for line in lines:
             if y >= height - line_height:
                 break
-            draw.text((10, y), line, fill=(200, 200, 200))
+            draw.text((10, y), line, font=font, fill=(200, 200, 200))
             y += line_height
         
         # Salva a imagem
