@@ -1,22 +1,23 @@
 import os
-import pytest
 import sys
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Adiciona o diretório raiz ao path para importação
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Importa o módulo para teste
 from security.user_auth import UserAuth
 
+
 class TestUserAuth:
     @pytest.fixture
     def mock_env(self):
-        with patch.dict(os.environ, {
-            "AUTHORIZED_USERS": "123456,789012",
-            "ADMIN_USER": "123456"
-        }):
+        with patch.dict(
+            os.environ, {"AUTHORIZED_USERS": "123456,789012", "ADMIN_USER": "123456"}
+        ):
             yield
 
     def test_load_authorized_users(self, mock_env):
@@ -52,18 +53,18 @@ class TestUserAuth:
 
     def test_redeem_invite_token(self, mock_env):
         auth = UserAuth()
-        
+
         # Gera um token para teste
         token = auth.generate_invite_token("123456")
-        
+
         # Resgata o token com um novo usuário
         result = auth.redeem_invite_token(token, "555555")
         assert result is True
         assert "555555" in auth.authorized_users
-        
+
         # Verifica que o token foi removido
         assert token not in auth.user_tokens
-        
+
         # Tenta resgatar um token inválido
         result = auth.redeem_invite_token("invalid_token", "666666")
         assert result is False
