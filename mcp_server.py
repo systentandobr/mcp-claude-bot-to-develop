@@ -3,19 +3,24 @@ import logging
 import os
 import subprocess
 from typing import Any, Dict, List, Optional
-
+import time 
+import json
 import anthropic
 import requests
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from git import Repo
 from langchain.chains import LLMChain
 from langchain.chat_models import ChatAnthropic
 from langchain.prompts import PromptTemplate
 from pydantic import BaseModel
-
-# Carrega variáveis de ambiente
-load_dotenv()
+from security.encryption import encryption_manager
+from security.mcp_security import (
+    SecureMiddleware,
+    decrypt_request_data,
+    encrypt_response_data,
+)
+from utils.common import get_connection_config, get_repo_info, get_security_config
 
 # Configuração de logging
 logging.basicConfig(
@@ -23,22 +28,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Carrega configurações usando as funções de utilitário
+connection_config = get_connection_config()
+repo_config = get_repo_info()
+security_config = get_security_config()
+
 # Configuração das chaves de API
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-REPOS_BASE_PATH = os.getenv(
-    "REPOS_BASE_PATH"
-)  # Diretório raiz onde estão todos os repositórios
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CLAUDE_API_KEY = connection_config["claude_api_key"]
+GITHUB_TOKEN = repo_config["github_token"]
+REPOS_BASE_PATH = repo_config["repos_base_path"]
+MCP_API_KEY = security_config["mcp_api_key"]
+TELEGRAM_BOT_TOKEN = connection_config["telegram_token"]
 
 # Inicializa o cliente Claude
 claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 # Armazenamento do repositório atual de cada usuário
 user_current_repos = {}
+chat_id = None
 
 # Inicializa a aplicação FastAPI
 app = FastAPI(title="MCP Server - Gerenciador de Repositório com IA")
+
+# Aplica o middleware de segurança
+# app.add_middleware(SecureMiddleware)
 
 
 # Modelos de dados
@@ -86,20 +99,6 @@ class NavigationRequest(BaseModel):
 
 # Armazenamento de sugestões
 suggestions_store = {}
-
-
-# Funções auxiliares
-def send_telegram_message(chat_id: str, text: str):
-    """Envia mensagem para o usuário via Telegram."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, json=payload)
-        return response.json()
-    except Exception as e:
-        logger.error(f"Erro ao enviar mensagem para o Telegram: {str(e)}")
-        return None
-
 
 def get_repo_for_user(chat_id: str, repo_name: str = None):
     """Obtém o repositório atual do usuário."""
@@ -165,11 +164,27 @@ def run_github_action(workflow_name: str, repo_url: str):
         logger.error(f"Erro ao executar GitHub Action: {str(e)}")
         return False
 
+@app.get("/health")
+async def health_check():
+    """Endpoint para verificação de saúde do servidor."""
+    return {
+        "status": "healthy",
+        "server": "MCP Server",
+        "version": "1.0.0",
+        "timestamp": int(time.time())
+    }
 
-# Rotas da API
+
+# Rota de teste para desenvolvimento
 @app.get("/")
 async def root():
-    return {"message": "MCP Server - Gerenciador de Repositório com IA"}
+    """Rota de teste que não requer autenticação."""
+    return {
+        "status": "running",
+        "message": "MCP Server está em execução. Use endpoints autenticados para operações reais.",
+        "docs": "/docs",
+        "health": "/health"
+    }
 
 
 @app.get("/repos")
@@ -184,10 +199,9 @@ async def list_repos(chat_id: str):
             and os.path.isdir(os.path.join(REPOS_BASE_PATH, d, ".git"))
         ]
 
-        if not repos:
-            message = "Nenhum repositório Git encontrado no diretório base."
-            send_telegram_message(chat_id, message)
-            return {"status": "success", "data": [], "message": message}
+        # if not repos:
+        #     message = "Nenhum repositório Git encontrado no diretório base."
+        #     return {"status": "success", "data": [], "message": message}
 
         repos_list = "Repositórios disponíveis:\n\n"
         for i, repo_name in enumerate(repos, 1):
@@ -195,49 +209,10 @@ async def list_repos(chat_id: str):
 
         repos_list += "\nUse /select <nome_repo> para selecionar um repositório."
 
-        send_telegram_message(chat_id, repos_list)
         return {"status": "success", "data": repos}
     except Exception as e:
         error_msg = f"Erro ao listar repositórios: {str(e)}"
-        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
-
-
-@app.post("/select")
-async def select_repo(request: RepoSelectionRequest):
-    """Seleciona um repositório para trabalhar."""
-    try:
-        repo_path = os.path.join(REPOS_BASE_PATH, request.repo_name)
-
-        if not os.path.isdir(repo_path):
-            error_msg = f"Repositório '{request.repo_name}' não encontrado."
-            send_telegram_message(request.chat_id, error_msg)
-            raise HTTPException(status_code=404, detail=error_msg)
-
-        if not os.path.isdir(os.path.join(repo_path, ".git")):
-            error_msg = (
-                f"O diretório '{request.repo_name}' não é um repositório Git válido."
-            )
-            send_telegram_message(request.chat_id, error_msg)
-            raise HTTPException(status_code=400, detail=error_msg)
-
-        # Configura o repositório atual para o usuário
-        user_current_repos[request.chat_id] = {
-            "repo_name": request.repo_name,
-            "repo_path": repo_path,
-            "current_dir": "",  # Caminho relativo dentro do repo, inicialmente vazio (raiz)
-        }
-
-        message = f"Repositório '{request.repo_name}' selecionado com sucesso!"
-        send_telegram_message(request.chat_id, message)
-        return {"status": "success", "message": message}
-    except HTTPException:
-        raise
-    except Exception as e:
-        error_msg = f"Erro ao selecionar repositório: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
-
 
 @app.get("/status")
 async def get_status(chat_id: str, repo_name: str = None):
@@ -245,18 +220,15 @@ async def get_status(chat_id: str, repo_name: str = None):
     try:
         repo_instance, error = get_repo_for_user(chat_id, repo_name)
         if error:
-            send_telegram_message(chat_id, error)
             raise HTTPException(status_code=400, detail=error)
 
         await update_repository(repo_instance)
         status = repo_instance.git.status()
-        send_telegram_message(chat_id, f"Status do repositório:\n```\n{status}\n```")
         return {"status": "success", "data": status}
     except HTTPException:
         raise
     except Exception as e:
         error_msg = f"Erro ao verificar status: {str(e)}"
-        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -314,6 +286,463 @@ async def suggest_modification(
         send_telegram_message(request.chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
+@app.get("/ls")
+async def list_files(chat_id: str, path: str):
+    """Lista arquivos e pastas do diretório especificado."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado."
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_path = user_info["repo_path"]
+        current_rel_dir = user_info.get("current_dir", "")
+        
+        # Constrói o caminho completo
+        target_rel_path = os.path.normpath(os.path.join(current_rel_dir, path)) if path else current_rel_dir
+        target_abs_path = os.path.join(repo_path, target_rel_path)
+        
+        # Verifica se o caminho existe e é um diretório
+        if not os.path.isdir(target_abs_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Caminho não encontrado ou não é um diretório: {target_rel_path}"
+            )
+        
+        # Lista o conteúdo do diretório
+        items = os.listdir(target_abs_path)
+        
+        # Separa diretórios e arquivos
+        directories = []
+        files = []
+        
+        for item in items:
+            item_path = os.path.join(target_abs_path, item)
+            if os.path.isdir(item_path):
+                if item != ".git":  # Opcional: ocultar diretório .git
+                    directories.append(f"{item}/")
+            else:
+                files.append(item)
+        
+        # Retorna os resultados
+        return {
+            "status": "success",
+            "current_path": target_rel_path or "/",
+            "directories": sorted(directories),
+            "files": sorted(files)
+        }
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Erro ao listar diretório: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao listar diretório: {str(e)}")
+
+@app.post("/select")
+async def select_repository(request: Request):
+    """Seleciona um repositório para trabalhar."""
+    try:
+        # Tenta obter parâmetros de ambas as fontes
+        body = {}
+        chat_id = None
+        repo_name = None
+        
+        # Tenta obter do corpo da requisição
+        try:
+            body_raw = await request.body()
+            if body_raw:
+                body = json.loads(body_raw)
+                chat_id = body.get("chat_id")
+                repo_name = body.get("repo_name")
+        except:
+            # Ignora erros na leitura do corpo
+            pass
+        
+        # Se não encontrou no corpo, tenta obter dos parâmetros de query
+        if not chat_id:
+            chat_id = request.query_params.get("chat_id")
+        if not repo_name:
+            repo_name = request.query_params.get("repo_name")
+        
+        # Verifica se tem os parâmetros necessários
+        if not chat_id or not repo_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Parâmetros obrigatórios não fornecidos: chat_id e repo_name"
+            )
+            
+        # Constrói o caminho do repositório
+        repo_path = os.path.join(REPOS_BASE_PATH, repo_name)
+        
+        if not os.path.isdir(repo_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Repositório '{repo_name}' não encontrado."
+            )
+        
+        if not os.path.isdir(os.path.join(repo_path, ".git")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"O diretório '{repo_name}' não é um repositório Git válido."
+            )
+        
+        # Configura o repositório atual para o usuário
+        user_current_repos[chat_id] = {
+            "repo_name": repo_name,
+            "repo_path": repo_path,
+            "current_dir": ""  # Caminho relativo dentro do repo, inicialmente vazio (raiz)
+        }
+        
+        logger.info(f"Repositório '{repo_name}' selecionado para o usuário {chat_id}")
+        return {"status": "success", "message": f"Repositório '{repo_name}' selecionado com sucesso!"}
+
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Erro ao selecionar repositório: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao selecionar repositório: {str(e)}")
+
+
+def generate_tree(path, prefix="", max_depth=2, current_depth=0):
+    """Gera uma representação em árvore de um diretório."""
+    if current_depth > max_depth:
+        return ""
+
+    result = ""
+    items = sorted(os.listdir(path))
+
+    # Filtra itens para excluir o diretório .git
+    items = [item for item in items if item != ".git"]
+
+    for i, item in enumerate(items):
+        is_last = i == len(items) - 1
+        item_path = os.path.join(path, item)
+
+        # Adiciona a linha atual
+        if is_last:
+            result += f"{prefix}└── {item}\n"
+            new_prefix = prefix + "    "
+        else:
+            result += f"{prefix}├── {item}\n"
+            new_prefix = prefix + "│   "
+
+        # Recursão para subdiretórios
+        if os.path.isdir(item_path):
+            result += generate_tree(item_path, new_prefix, max_depth, current_depth + 1)
+
+    return result
+
+async def getParams(request: Request):
+    try:
+        # Tenta obter parâmetros de ambas as fontes
+        body = {}
+        path = None
+        
+        # Tenta obter do corpo da requisição
+        try:
+            body_raw = await request.body()
+            if body_raw:
+                body = json.loads(body_raw)
+                chat_id = body.get("chat_id")
+                path = body.get("path")
+        except:
+            # Ignora erros na leitura do corpo
+            pass
+        
+        # Se não encontrou no corpo, tenta obter dos parâmetros de query
+        if not chat_id:
+            chat_id = request.query_params.get("chat_id")
+        if not path:
+            path = request.query_params.get("path")
+        
+        # Verifica se tem os parâmetros necessários
+        if not chat_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Parâmetros obrigatórios não fornecidos: chat_id ou path"
+            )
+        
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado."
+            )
+        
+        return {
+            "body": body,
+            "chat_id": chat_id,
+            "path": path
+        }
+    except Exception as e:
+        await send_telegram_message(chat_id, 
+            (f"Erro ao gerar árvore: {str(e)}")
+        )
+        logger.error(f"Erro ao gerar árvore: {str(e)}")
+
+@app.get("/tree")
+async def get_tree(request: Request):
+    """Mostra a estrutura de diretórios."""
+    try:
+        await getParams(request)        
+        
+        user_info = user_current_repos[chat_id]
+        repo_path = user_info["repo_path"]
+        max_depth = user_info["max_depth"]
+        current_rel_dir = user_info.get("current_dir", "") or "/"
+        current_abs_dir = os.path.join(repo_path, current_rel_dir)
+
+        # Gera a árvore
+        tree_output = (
+            f"📂 {os.path.basename(current_abs_dir) or user_info['repo_name']}\n"
+        )
+        tree_output += generate_tree(current_abs_dir, "", max_depth)
+
+        # Verifica se a saída não é muito longa para o Telegram
+        if len(tree_output) > 4000:
+            tree_output = (
+                tree_output[:3900] + "\n\n... (saída truncada, use profundidade menor)"
+            )
+
+        await send_telegram_message(chat_id,
+            f"```\n{tree_output}\n```", parse_mode="Markdown"
+        )
+    except Exception as e:
+        await send_telegram_message(chat_id, 
+            (f"Erro ao gerar árvore: {str(e)}")
+        )
+        logger.error(f"Erro ao gerar árvore: {str(e)}")
+        
+
+@app.get("/checkout")
+async def checkout_request(chat_id: str):
+    """Muda para outra branch."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado. Use /repos para listar e /select para escolher um."
+
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_path = user_info["repo_path"]
+        args = user_info["args"]
+        repo = Repo(repo_path)
+
+        # Lista as branches
+        branches = repo.git.branch("-a").split("\n")
+
+        await send_telegram_message(chat_id,
+            f"Branches do repositório:\n```\n{chr(10).join(branches)}\n```",
+            parse_mode="Markdown",
+        )
+                
+        if not args:
+            send_telegram_message(chat_id,
+                "Por favor, especifique a branch.\nUso: /checkout <branch>"
+            )
+            return
+
+        branch_name = args[0]
+        repo = Repo(repo_path)
+        # Executa o checkout
+        repo.git.checkout(branch_name)
+
+        await send_telegram_message(chat_id,
+            (f"Alterado para branch: {branch_name}")
+        )
+    except Exception as e:
+        await send_telegram_message(chat_id,
+            (f"Erro ao fazer checkout: {str(e)}")
+        )
+        
+
+@app.get("/branch")
+async def branch_request(chat_id: str):
+    """Mostra as branches do repositório."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado. Use /repos para listar e /select para escolher um."
+
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_path = user_info["repo_path"]
+        
+        repo = Repo(repo_path)
+
+        # Lista as branches
+        branches = repo.git.branch("-a").split("\n")
+
+        await send_telegram_message(chat_id,
+            f"Branches do repositório:\n```\n{chr(10).join(branches)}\n```",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await send_telegram_message(chat_id,
+            (f"Erro ao listar branches: {str(e)}")
+        )
+    
+             
+
+@app.get("/cat")
+async def cat_request(chat_id: str):
+    """Mostra o conteúdo de um arquivo."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado."
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_name = user_info["repo_name"]
+        repo_path = user_info["repo_path"]
+        current_rel_dir = user_info.get("current_dir", "") or "/"
+        file_arg = " ".join(user_info.args)     
+
+        # Constrói o caminho do arquivo
+        file_rel_path = os.path.normpath(os.path.join(current_rel_dir, file_arg))
+        file_abs_path = os.path.join(repo_path, file_rel_path)
+
+        # Verifica se o arquivo existe
+        if not os.path.isfile(file_abs_path):
+            await send_telegram_message(chat_id,
+                (f"Arquivo não encontrado: {file_rel_path}")
+            )
+            return
+
+        # Verifica o tamanho do arquivo
+        file_size = os.path.getsize(file_abs_path)
+        if file_size > 1000000:  # 1MB
+            await send_telegram_message(chat_id,
+                f"O arquivo é muito grande ({file_size / 1000000:.2f} MB). "
+                f"Posso mostrar apenas arquivos menores que 1 MB."
+            )
+            return
+
+        # Determina o tipo de arquivo para formatação adequada
+        _, file_ext = os.path.splitext(file_abs_path)
+
+        # Lê o conteúdo do arquivo
+        with open(file_abs_path, "r", encoding="utf-8", errors="replace") as file:
+            content = file.read()
+
+        # Limita o tamanho do conteúdo
+        if len(content) > 4000:
+            content = content[:3900] + "\n\n... (conteúdo truncado)"
+
+        # Envia o conteúdo formatado
+        language = ""
+        if file_ext in [
+            ".py",
+            ".js",
+            ".java",
+            ".c",
+            ".cpp",
+            ".cs",
+            ".php",
+            ".go",
+            ".ts",
+            ".html",
+            ".css",
+            ".json",
+            ".xml",
+        ]:
+            language = file_ext[1:]  # Remove o ponto
+
+        message = f"📄 {file_rel_path}:\n\n```{language}\n{content}\n```"
+
+        await send_telegram_message(chat_id, message, parse_mode="Markdown")
+    except Exception as e:
+        await send_telegram_message(chat_id,
+            (f"Erro ao mostrar arquivo: {str(e)}")
+        )
+        logger.error(f"Erro ao mostrar arquivo: {str(e)}")
+        
+
+@app.post("/pwd")
+async def get_current_directory(chat_id: str):
+    """Mostra o diretório atual."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado."
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_name = user_info["repo_name"]
+        repo_path = user_info["repo_path"]
+        current_dir = user_info.get("current_dir", "") or "/"
+        
+        return {
+            "status": "success", 
+            "repo_name": repo_name,
+            "repo_path": repo_path,
+            "current_path": current_dir
+        }
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Erro ao obter diretório atual: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao obter diretório atual: {str(e)}")
+
+@app.post("/cd")
+async def change_directory(chat_id: str, path: str):
+    """Navega para o diretório especificado."""
+    try:
+        # Verifica se um repositório foi selecionado
+        if chat_id not in user_current_repos:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum repositório selecionado."
+            )
+        
+        user_info = user_current_repos[chat_id]
+        repo_path = user_info["repo_path"]
+        current_rel_dir = user_info.get("current_dir", "")
+        
+        # Caso especial para voltar à raiz
+        if path == "/":
+            user_current_repos[chat_id]["current_dir"] = ""
+            return {"status": "success", "current_path": "/"}
+        
+        # Caso especial para voltar um nível
+        if path == "..":
+            new_rel_dir = os.path.dirname(current_rel_dir)
+            user_current_repos[chat_id]["current_dir"] = new_rel_dir
+            return {"status": "success", "current_path": new_rel_dir or "/"}
+        
+        # Caso normal
+        new_rel_dir = os.path.normpath(os.path.join(current_rel_dir, path))
+        new_abs_dir = os.path.join(repo_path, new_rel_dir)
+        
+        # Verifica se o caminho existe e é um diretório
+        if not os.path.isdir(new_abs_dir):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Caminho não encontrado ou não é um diretório: {new_rel_dir}"
+            )
+        
+        # Atualiza o diretório atual
+        user_current_repos[chat_id]["current_dir"] = new_rel_dir
+        
+        return {"status": "success", "current_path": new_rel_dir or "/"}
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Erro ao navegar para o diretório: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao navegar para o diretório: {str(e)}")
 
 async def process_suggestion_request(
     file_path: str, description: str, chat_id: str, repo_path: str
@@ -392,7 +821,7 @@ async def apply_modification(request: ApplyModificationRequest):
         # Verifica se a sugestão existe
         if request.suggestion_id not in suggestions_store:
             error_msg = f"Sugestão #{request.suggestion_id} não encontrada."
-            send_telegram_message(request.chat_id, error_msg)
+            send_telegram_message(chat_id, error_msg)
             raise HTTPException(status_code=404, detail=error_msg)
 
         # Obtém os dados da sugestão
@@ -408,7 +837,7 @@ async def apply_modification(request: ApplyModificationRequest):
 
         # Informa ao usuário
         send_telegram_message(
-            request.chat_id,
+            chat_id,
             f"Sugestão #{request.suggestion_id} aplicada com sucesso ao arquivo '{file_path}'.\n"
             f"Use /commit para confirmar as alterações.",
         )
@@ -420,7 +849,7 @@ async def apply_modification(request: ApplyModificationRequest):
 
     except Exception as e:
         error_msg = f"Erro ao aplicar sugestão: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
+        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -431,7 +860,7 @@ async def reject_modification(request: ApplyModificationRequest):
         # Verifica se a sugestão existe
         if request.suggestion_id not in suggestions_store:
             error_msg = f"Sugestão #{request.suggestion_id} não encontrada."
-            send_telegram_message(request.chat_id, error_msg)
+            send_telegram_message(chat_id, error_msg)
             raise HTTPException(status_code=404, detail=error_msg)
 
         # Remove a sugestão
@@ -440,7 +869,7 @@ async def reject_modification(request: ApplyModificationRequest):
 
         # Informa ao usuário
         send_telegram_message(
-            request.chat_id,
+            chat_id,
             f"Sugestão #{request.suggestion_id} para '{file_path}' foi rejeitada.",
         )
 
@@ -451,7 +880,7 @@ async def reject_modification(request: ApplyModificationRequest):
 
     except Exception as e:
         error_msg = f"Erro ao rejeitar sugestão: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
+        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -459,9 +888,9 @@ async def reject_modification(request: ApplyModificationRequest):
 async def commit_changes(request: CommitRequest):
     """Realiza commit das alterações."""
     try:
-        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        repo_instance, error = get_repo_for_user(chat_id, request.repo_name)
         if error:
-            send_telegram_message(request.chat_id, error)
+            send_telegram_message(chat_id, error)
             raise HTTPException(status_code=400, detail=error)
 
         # Adiciona todas as alterações
@@ -472,7 +901,7 @@ async def commit_changes(request: CommitRequest):
 
         # Informa ao usuário
         send_telegram_message(
-            request.chat_id,
+            chat_id,
             f"Commit realizado com sucesso: '{request.message}'.\n"
             f"Use /push para enviar as alterações para o GitHub.",
         )
@@ -484,7 +913,7 @@ async def commit_changes(request: CommitRequest):
 
     except Exception as e:
         error_msg = f"Erro ao realizar commit: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
+        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -492,9 +921,9 @@ async def commit_changes(request: CommitRequest):
 async def push_changes(request: PushRequest):
     """Envia as alterações para o GitHub."""
     try:
-        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        repo_instance, error = get_repo_for_user(chat_id, request.repo_name)
         if error:
-            send_telegram_message(request.chat_id, error)
+            send_telegram_message(chat_id, error)
             raise HTTPException(status_code=400, detail=error)
 
         # Envia as alterações para o GitHub
@@ -503,7 +932,7 @@ async def push_changes(request: PushRequest):
 
         # Informa ao usuário
         send_telegram_message(
-            request.chat_id, "Alterações enviadas com sucesso para o GitHub."
+            chat_id, "Alterações enviadas com sucesso para o GitHub."
         )
 
         return {
@@ -513,7 +942,7 @@ async def push_changes(request: PushRequest):
 
     except Exception as e:
         error_msg = f"Erro ao enviar alterações: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
+        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -521,9 +950,9 @@ async def push_changes(request: PushRequest):
 async def execute_github_action(workflow_name: str, request: PushRequest):
     """Executa uma GitHub Action específica."""
     try:
-        repo_instance, error = get_repo_for_user(request.chat_id, request.repo_name)
+        repo_instance, error = get_repo_for_user(chat_id, request.repo_name)
         if error:
-            send_telegram_message(request.chat_id, error)
+            send_telegram_message(chat_id, error)
             raise HTTPException(status_code=400, detail=error)
 
         # Obtém a URL remota do repositório
@@ -534,7 +963,7 @@ async def execute_github_action(workflow_name: str, request: PushRequest):
         if result:
             # Informa ao usuário
             send_telegram_message(
-                request.chat_id,
+                chat_id,
                 f"GitHub Action '{workflow_name}' iniciada com sucesso.",
             )
 
@@ -544,12 +973,12 @@ async def execute_github_action(workflow_name: str, request: PushRequest):
             }
         else:
             error_msg = f"Erro ao iniciar GitHub Action '{workflow_name}'."
-            send_telegram_message(request.chat_id, error_msg)
+            send_telegram_message(chat_id, error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
 
     except Exception as e:
         error_msg = f"Erro ao executar GitHub Action: {str(e)}"
-        send_telegram_message(request.chat_id, error_msg)
+        send_telegram_message(chat_id, error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -558,3 +987,15 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+#    "/tree", tree_command))
+#    "/cat", cat_command))
+
+#    "/branch", branch_command))
+#    "/checkout", checkout_command))
+#    "/suggest", suggest_command))
+#    "/apply", apply_command))
+#    "/reject", reject_command))
+#    "/commit", commit_command))
+#    "/push", push_command))

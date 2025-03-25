@@ -1,13 +1,14 @@
 import base64
+import logging
 import os
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from dotenv import load_dotenv
 
-# Carrega variáveis de ambiente
-load_dotenv()
+from utils.common import get_env_var, update_env_var
+
+logger = logging.getLogger(__name__)
 
 
 class EncryptionManager:
@@ -18,23 +19,23 @@ class EncryptionManager:
 
     def _get_encryption_key(self):
         """Obtém a chave de criptografia do ambiente ou gera uma nova."""
-        key_env = os.getenv("ENCRYPTION_KEY")
+        key_env = get_env_var("ENCRYPTION_KEY")
 
         if key_env:
-            return key_env.encode()
+            try:
+                # Tenta usar a chave existente
+                key = key_env.encode()
+                # Validar se a chave está no formato correto
+                Fernet(key)  # Isso lançará uma exceção se a chave não for válida
+                return key
+            except Exception as e:
+                logger.warning(
+                    f"Chave de criptografia existente é inválida: {e}. Gerando nova chave."
+                )
+                # Continua para gerar uma nova chave
 
-        # Se não houver chave no ambiente, gera uma nova e salva
-        password = os.urandom(32)  # Gera um "password" aleatório
-        salt = os.urandom(16)
-
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100000,
-        )
-
-        key = base64.urlsafe_b64encode(kdf.derive(password))
+        # Gera uma nova chave Fernet
+        key = Fernet.generate_key()
 
         # Salva a chave no arquivo .env
         self._save_key_to_env(key.decode())
@@ -44,30 +45,10 @@ class EncryptionManager:
     def _save_key_to_env(self, key):
         """Salva a chave no arquivo .env."""
         try:
-            # Lê o arquivo .env existente
-            env_content = []
-            if os.path.exists(".env"):
-                with open(".env", "r") as f:
-                    env_content = f.readlines()
-
-            # Procura pela linha ENCRYPTION_KEY e a substitui
-            key_line_found = False
-            for i, line in enumerate(env_content):
-                if line.startswith("ENCRYPTION_KEY="):
-                    env_content[i] = f"ENCRYPTION_KEY={key}\n"
-                    key_line_found = True
-                    break
-
-            # Se não encontrou, adiciona no final
-            if not key_line_found:
-                env_content.append(f"ENCRYPTION_KEY={key}\n")
-
-            # Escreve de volta no arquivo
-            with open(".env", "w") as f:
-                f.writelines(env_content)
-
+            # Usa a função de utilitário para atualizar a variável
+            update_env_var("ENCRYPTION_KEY", key)
         except Exception as e:
-            print(f"Erro ao salvar chave de criptografia: {e}")
+            logger.error(f"Erro ao salvar chave de criptografia: {e}")
 
     def encrypt_text(self, text):
         """Criptografa um texto."""
@@ -97,7 +78,7 @@ class EncryptionManager:
 
             return output_path
         except Exception as e:
-            print(f"Erro ao criptografar arquivo: {e}")
+            logger.error(f"Erro ao criptografar arquivo: {e}")
             return None
 
     def decrypt_file(self, encrypted_file_path, output_path=None):
@@ -119,7 +100,7 @@ class EncryptionManager:
 
             return output_path
         except Exception as e:
-            print(f"Erro ao descriptografar arquivo: {e}")
+            logger.error(f"Erro ao descriptografar arquivo: {e}")
             return None
 
 
