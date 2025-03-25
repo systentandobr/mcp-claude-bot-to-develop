@@ -42,7 +42,7 @@ fi
 
 # Executa pylint
 echo -e "${BLUE}Executando pylint...${NC}"
-pylint --disable=C0111,R0903,C0103 $(git ls-files '*.py')
+git ls-files '*.py' | grep -v "^tests/" | grep -v "^test*" | xargs pylint --disable=C0111,R0903,C0103
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ Pylint OK${NC}"
 else

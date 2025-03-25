@@ -1,2 +1,2 @@
 [MASTER]
-ignore=tests,test_repos
+ignore=tests

@@ -1,10 +1,11 @@
+import logging
 import os
+import secrets
 from typing import Dict, List, Optional, Set
 
-from dotenv import load_dotenv
+from utils.common import get_security_config, update_env_var
 
-# Carrega variáveis de ambiente
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class UserAuth:
@@ -14,20 +15,22 @@ class UserAuth:
         self.admin_users: Set[str] = set()
         self.user_tokens: Dict[str, str] = {}  # token: user_id
 
-        # Carrega usuários autorizados do .env
+        # Carrega usuários autorizados
         self._load_authorized_users()
 
     def _load_authorized_users(self):
-        """Carrega usuários autorizados das variáveis de ambiente."""
-        # Formato: ID1,ID2,ID3
-        auth_users = os.getenv("AUTHORIZED_USERS", "")
-        if auth_users:
-            self.authorized_users = set(auth_users.split(","))
+        """Carrega usuários autorizados das configurações de segurança."""
+        security_config = get_security_config()
 
-        # Admin tem privilégios adicionais (como adicionar novos usuários)
-        admin_user = os.getenv("ADMIN_USER", "")
-        if admin_user:
-            self.admin_users = set(admin_user.split(","))
+        # Carrega usuários autorizados
+        if security_config["authorized_users"]:
+            self.authorized_users = set(
+                filter(None, security_config["authorized_users"])
+            )
+
+        # Carrega administradores
+        if security_config["admin_users"]:
+            self.admin_users = set(filter(None, security_config["admin_users"]))
             # Admins também são usuários autorizados
             self.authorized_users.update(self.admin_users)
 
@@ -45,8 +48,6 @@ class UserAuth:
             return None
 
         # Gera um token aleatório
-        import secrets
-
         token = secrets.token_urlsafe(16)
 
         # Armazena o token temporariamente
@@ -65,7 +66,7 @@ class UserAuth:
         # Remove o token usado
         del self.user_tokens[token]
 
-        # Atualiza o arquivo .env (opcional)
+        # Atualiza o arquivo .env
         self._update_env_file()
 
         return True
@@ -73,32 +74,15 @@ class UserAuth:
     def _update_env_file(self):
         """Atualiza o arquivo .env com os usuários autorizados."""
         try:
-            # Lê o arquivo .env existente
-            with open(".env", "r") as f:
-                env_lines = f.readlines()
+            # Atualiza a lista de usuários autorizados
+            auth_users_str = ",".join(self.authorized_users)
+            update_env_var("AUTHORIZED_USERS", auth_users_str)
 
-            # Procura a linha AUTHORIZED_USERS
-            found = False
-            for i, line in enumerate(env_lines):
-                if line.startswith("AUTHORIZED_USERS="):
-                    env_lines[i] = (
-                        f"AUTHORIZED_USERS={','.join(self.authorized_users)}\n"
-                    )
-                    found = True
-                    break
-
-            # Se não encontrou, adiciona no final
-            if not found:
-                env_lines.append(
-                    f"AUTHORIZED_USERS={','.join(self.authorized_users)}\n"
-                )
-
-            # Escreve de volta no arquivo
-            with open(".env", "w") as f:
-                f.writelines(env_lines)
-
+            # Atualiza a lista de administradores
+            admin_users_str = ",".join(self.admin_users)
+            update_env_var("ADMIN_USER", admin_users_str)
         except Exception as e:
-            print(f"Erro ao atualizar arquivo .env: {e}")
+            logger.error(f"Erro ao atualizar arquivo .env: {e}")
 
 
 # Instância global
